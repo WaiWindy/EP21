@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Brainrot Game — Alpha</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .hidden { display: none; }
+    #belt, #inventory, #leaderboard { margin-top: 10px; }
+    .brainrot { 
+      padding: 8px; 
+      border: 1px solid #333; 
+      margin: 4px; 
+      cursor: pointer; 
+      display: inline-block;
+    }
+    .inventory-item {
+      padding: 6px;
+      border: 1px dashed #555;
+      margin: 3px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+<h1>Brainrot Game (Alpha)</h1>
+
+<!-- Login / Sign-up UI -->
+<div id="auth">
+  <div id="loginForm">
+    <h3>Login</h3>
+    <input id="loginUser" placeholder="Username"><br>
+    <input id="loginPass" type="password" placeholder="Password"><br>
+    <button onclick="login()">Login</button>
+    <p>or <a href="#" onclick="showSignup()">Sign Up</a></p>
+  </div>
+
+  <div id="signupForm" class="hidden">
+    <h3>Sign Up</h3>
+    <input id="signUser" placeholder="Choose username"><br>
+    <input id="signPass" type="password" placeholder="Choose password"><br>
+    <button onclick="signup()">Sign Up</button>
+    <p>or <a href="#" onclick="showLogin()">Login</a></p>
+  </div>
+</div>
+
+<!-- Game UI -->
+<div id="gameUI" class="hidden">
+  <p>Welcome, <strong id="usernameDisplay"></strong>!</p>
+  <div>Money: $<span id="money">0</span></div>
+  <button onclick="claimMoney()">Claim</button>
+  <button onclick="protectBase()">Protect (5 min)</button>
+
+  <h2>Conveyor Belt (Click to Buy)</h2>
+  <div id="belt"></div>
+
+  <h2>Inventory (Max 20, Click to Sell)</h2>
+  <div id="inventory"></div>
+
+  <h2>Leaderboard</h2>
+  <pre id="leaderboard"></pre>
+
+  <h3>Input Commands / Codes</h3>
+  <input id="adminCommand" placeholder=";summon rarity OR code OR ;money num"><button onclick="runAdmin()">OK</button>
+</div>
+
+<script>
+// --- SheetDB API URL for Leaderboard ---
+const SHEETDB_LEADERBOARD = "https://sheetdb.io/api/v1/i1qv3dz9dti0p"; 
+// Replace YOUR_ID with actual SheetDB endpoint
+
+// --- Login & Sign-Up Logic ---
+function showLogin() { 
+  document.getElementById('loginForm').classList.remove('hidden'); 
+  document.getElementById('signupForm').classList.add('hidden'); 
+}
+
+function showSignup() { 
+  document.getElementById('loginForm').classList.add('hidden'); 
+  document.getElementById('signupForm').classList.remove('hidden'); 
+}
+
+function login() {
+  const u = document.getElementById('loginUser').value;
+  const p = document.getElementById('loginPass').value;
+  const users = JSON.parse(localStorage.getItem('users') || '{}');
+  
+  if (users[u] && users[u] === p) {
+    localStorage.setItem('loggedIn', u);
+    player.name = u;
+    startGame();
+  } else {
+    alert('Invalid credentials');
+  }
+}
+
+function signup() {
+  const u = document.getElementById('signUser').value;
+  const p = document.getElementById('signPass').value;
+  
+  if (!u || !p) return alert('Choose both fields');
+  
+  const users = JSON.parse(localStorage.getItem('users') || '{}');
+  if (users[u]) return alert('User exists');
+  
+  users[u] = p;
+  localStorage.setItem('users', JSON.stringify(users));
+  localStorage.setItem('loggedIn', u);
+  player.name = u;
+  startGame();
+}
+
+function startGame() {
+  document.getElementById('auth').classList.add('hidden');
+  document.getElementById('gameUI').classList.remove('hidden');
+  document.getElementById('usernameDisplay').textContent = localStorage.getItem('loggedIn');
+  updateUI();
+  setIntervalsAndSpawn();
+  syncLeaderboardOnLogin();
+}
+
+// --- Sync Leaderboard to SheetDB ---
+async function syncLeaderboardOnLogin() {
+  await updateLeaderboard();
+  await renderLeaderboard();
+}
+
+async function updateLeaderboard() {
+  const res = await fetch(`${SHEETDB_LEADERBOARD}/search?Name=${player.name}`);
+  const data = await res.json();
+  
+  if (data.length > 0) {
+    await fetch(`${SHEETDB_LEADERBOARD}/Name/${player.name}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Money: player.money })
+    });
+  } else {
+    await fetch(SHEETDB_LEADERBOARD, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([{ Name: player.name, Money: player.money }])
+    });
+  }
+}
+
+async function renderLeaderboard() {
+  const res = await fetch(SHEETDB_LEADERBOARD);
+  const data = await res.json();
+  data.sort((a, b) => b.Money - a.Money);
+  document.getElementById('leaderboard').innerText = data.map(r => `${r.Name}: $${r.Money}`).join('\n');
+}
+
+// --- Game Data & Functions ---
+let player = { name: '', money: 100, base: [], protected: false, usedCodes: [] };
+
+function updateUI() {
+  document.getElementById('money').textContent = player.money;
+  renderInventory();
+  renderLeaderboard();
+}
+
+function renderInventory() {
+  document.getElementById('inventory').innerHTML = "";
+  player.base.forEach((b, i) => {
+    const div = document.createElement("div");
+    div.className = "inventory-item";
+    div.textContent = `${b.name} (${b.rarity}) [Sell: $${Math.floor(brainrotPrice[b.rarity] / 2)}]`;
+    div.onclick = () => sellItem(i);
+    document.getElementById('inventory').appendChild(div);
+  });
+}
+
+function claimMoney() {
+  player.money += 10;
+  updateUI();
+  updateLeaderboard();
+}
+
+function protectBase() {
+  player.protected = true;
+  alert("Base protected for 5 minutes!");
+  setTimeout(() => {
+    player.protected = false;
+    alert("Protection expired!");
+  }, 300000);
+}
+
+function setIntervalsAndSpawn() {
+  setInterval(() => spawnBrainrot(), 5000);
+  setInterval(() => {
+    let bonus = 0;
+    player.base.forEach(b => bonus += brainrotBonus[b.rarity] || 0);
+    if (bonus > 0) player.money += bonus;
+    updateUI();
+  }, 1000);
+}
+
+// --- Brainrot Data ---
+const brainrotNames = { 
+  common: ["Sethbadilo", "Aom Aom Aom", "Noobpizini"],
+  uncommon: ["Aombardilo", "Seth Bananini", "Wailini Panotla"],
+  rare: ["AI Hugo", "looklilini", "Waidindindunodindindun"],
+  legendary: ["Naradesini", "Steven Came", "Touchlelo"],
+  mythic: ["Tun tun tun", "Gangster Montero", "Bestucino Assasino"],
+  braingod: ["Arty troppi", "Cum din din", "Possanini bananini"],
+  secret: ["PHONG PHONG", "LAPATA", "ARTU BARBER"]
+};
+
+const brainrotPrice = { 
+  common: 10, uncommon: 25, rare: 50, 
+  legendary: 100, mythic: 12000, braingod: 25000, secret: 100000 
+};
+
+const brainrotBonus = { 
+  common: 5, uncommon: 15, rare: 50, 
+  legendary: 200, mythic: 300, braingod: 500, secret: 1000 
+};
+
+function getRandomRarity() {
+  const roll = Math.random() * 100;
+  if (roll < 0.01) return "secret";
+  if (roll < 0.06) return "braingod";
+  if (roll < 0.16) return "mythic";
+  if (roll < 40) return "legendary";
+  if (roll < 70) return "rare";
+  if (roll < 90) return "uncommon";
+  return "common";
+}
+
+// --- Spawning ---
+// --- Spawning ---
+function spawnBrainrot() {
+  const rarity = getRandomRarity();
+  const nameList = brainrotNames[rarity];
+  const name = nameList[Math.floor(Math.random() * nameList.length)];
+  
+  const div = document.createElement("div");
+  div.className = "brainrot";
+  div.textContent = `${name} (${rarity}) — $${brainrotPrice[rarity]}`;
+  
+  // pass the DOM element so we can remove on purchase
+  div.onclick = () => buyBrainrot({ name, rarity }, div); 
+  
+  document.getElementById('belt').appendChild(div);
+  setTimeout(() => div.remove(), 15000); // despawn after 15s if not bought
+}
+
+// --- Buying ---
+function buyBrainrot(brainrot, element) {
+  if (player.base.length >= 20) return alert("Inventory full!");
+  if (player.money < brainrotPrice[brainrot.rarity]) return alert("Not enough money!");
+  
+  player.money -= brainrotPrice[brainrot.rarity];
+  player.base.push(brainrot);
+  
+  // remove from belt immediately after buying
+  if (element) element.remove();
+  
+  updateUI();
+  updateLeaderboard();
+}
+
+
+// --- Selling ---
+function sellItem(index) {
+  const item = player.base[index];
+  const sellPrice = Math.floor(brainrotPrice[item.rarity] / 2);
+  player.money += sellPrice;
+  player.base.splice(index, 1);
+  updateUI();
+  updateLeaderboard();
+}
+</script>
+</body>
+</html>
